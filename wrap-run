@@ -1,0 +1,69 @@
+#!/bin/bash
+
+# Function to print usage information
+print_usage() {
+    echo "Usage: js-run [trainer[START-END]] <command>"
+    echo ""
+    echo "Executes the given command on a Ray cluster."
+    echo "Must be run from a 'distributed_llm' directory."
+    echo ""
+    echo "Options:"
+    echo "  trainer[START-END]  Specify the range of trainer nodes to use (e.g., trainer[01-05])"
+}
+
+# Check if no arguments are provided
+if [ $# -eq 0 ]; then
+    print_usage
+    exit 1
+fi
+
+# Check if current directory is "distributed_llm"
+current_dir=$(basename "$PWD")
+if [ "$current_dir" != "distributed_llm" ]; then
+    echo "Error: This script must be run from a 'distributed_llm' directory."
+    exit 1
+fi
+
+# Parse arguments
+start_node=1
+end_node=1
+
+if [[ $1 =~ trainer\[([0-9]+)-([0-9]+)\] ]]; then
+    start_node=${BASH_REMATCH[1]}
+    end_node=${BASH_REMATCH[2]}
+    shift
+fi
+
+# Combine all remaining arguments into a single command
+cmd="$*"
+
+# Function to run on Ray cluster
+run_on_ray_cluster() {
+    local cmd="$1"
+    local start_node="$2"
+    local end_node="$3"
+    local container_name="raycluster"
+    local remote_user="$USER"
+    local remote_host="trainer$(printf "%02d" $start_node)"
+    local remote_path="/mnt/bs_fs/$USER/distributed_llm"
+
+    echo "Using $remote_host as the primary node"
+
+    echo "Removing existing directory at $remote_user@$remote_host:$remote_path"
+    ssh "$remote_user@$remote_host" "rm -rf $remote_path"
+
+    echo "Copying files to $remote_user@$remote_host:$remote_path"
+    rsync -aqvz --exclude '.git' ./ "$remote_user@$remote_host:$remote_path"
+
+    ssh $remote_user@$remote_host "python3 /mnt/bs_fs/rayc.py stop -s $start_node -e $end_node"
+    ssh $remote_user@$remote_host "python3 /mnt/bs_fs/rayc.py start -s $start_node -e $end_node"
+    echo "Running command:"
+    echo "ssh $remote_user@$remote_host \"docker exec $container_name-$USER $cmd\""
+
+    trap "ssh $remote_user@$remote_host \"python3 /mnt/bs_fs/rayc.py stop -s $start_node -e $end_node\"" EXIT
+
+    ssh $remote_user@$remote_host "docker exec $container_name-$USER $cmd"
+}
+
+# Run the command
+run_on_ray_cluster "$cmd" "$start_node" "$end_node"
