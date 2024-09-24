@@ -34,6 +34,12 @@ if [[ $1 =~ trainer\[([0-9]+)-([0-9]+)\] ]]; then
     shift
 fi
 
+start_node=$((10#$start_node))
+end_node=$((10#$end_node))
+
+#echo $start_node $end_node
+#sleep 3600
+
 # Combine all remaining arguments into a single command
 cmd="$*"
 
@@ -49,18 +55,15 @@ run_on_ray_cluster() {
 
     echo "Using $remote_host as the primary node"
 
-    echo "Removing existing directory at $remote_user@$remote_host:$remote_path"
-    ssh "$remote_user@$remote_host" "rm -rf $remote_path"
+    echo "Copying files to $remote_path"
+    rsync -aqvz --delete --exclude '.git' . $remote_path
 
-    echo "Copying files to $remote_user@$remote_host:$remote_path"
-    rsync -aqvz --exclude '.git' ./ "$remote_user@$remote_host:$remote_path"
-
-    ssh $remote_user@$remote_host "python3 /mnt/bs_fs/rayc.py stop -s $start_node -e $end_node"
-    ssh $remote_user@$remote_host "python3 /mnt/bs_fs/rayc.py start -s $start_node -e $end_node"
+    ssh $remote_user@trainer01 "python3 /mnt/bs_fs/rayc.py stop -s $start_node -e $end_node"
+    ssh $remote_user@trainer01 "python3 /mnt/bs_fs/rayc.py start -s $start_node -e $end_node"
     echo "Running command:"
     echo "ssh $remote_user@$remote_host \"docker exec $container_name-$USER $cmd\""
 
-    trap "ssh $remote_user@$remote_host \"python3 /mnt/bs_fs/rayc.py stop -s $start_node -e $end_node\"" EXIT
+    trap "ssh $remote_user@trainer01 \"python3 /mnt/bs_fs/rayc.py stop -s $start_node -e $end_node\"" EXIT
 
     ssh $remote_user@$remote_host "docker exec $container_name-$USER $cmd"
 }
