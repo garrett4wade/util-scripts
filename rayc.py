@@ -17,39 +17,33 @@ def find_free_port():
         return s.getsockname()[1]
 
 
-def launch_container_and_copy_code_repo(args, container_name):
+def copy_code_repo(args, container_name):
+    first_node = f"{args.node_prefix}{args.start_idx:02d}"
+    cmds = [
+        f"docker exec {container_name} rm -rf /realhf",
+        f"docker cp /mnt/bs_fs/{user}/distributed_llm {container_name}:/realhf",
+        (f"docker exec {container_name} cp -r /_realhf/realhf/_C /realhf/realhf/"),
+    ]
+    for c in cmds:
+        subprocess.run(f"ssh {user}@{first_node} \"{c}\"", shell=True)
+
+
+def setup_ray(args):
+    assert args.end_idx >= args.start_idx, (args.start_idx, args.end_idx)
+    first_node = f"{args.node_prefix}{args.start_idx:02d}"
+    container_name = f"{args.container_name}-{user}"
+    print(f"Setting up docker container in the head node...")
+    # start local docker image
     cmd = (
         f"docker run -dit --gpus all --network host --name {container_name} "
         f"{args.docker_args} {_get_default_docker_args()} {args.image_name} bash"
     )
-    subprocess.run(cmd, shell=True)
-    cmd = f"docker exec {container_name} rm -rf /realhf"
-    subprocess.run(cmd, shell=True)
-    cmd = f"docker cp /mnt/bs_fs/{user}/distributed_llm {container_name}:/realhf"
-    subprocess.run(cmd, shell=True)
-
-
-def setup_ray(args):
-    assert args.end_idx > args.start_idx + 1, (args.start_idx, args.end_idx)
-    assert socket.gethostname() == f"{args.node_prefix}{args.start_idx:02d}", (
-        socket.gethostname(),
-        f"{args.node_prefix}{args.start_idx:02d}",
-    )
-    container_name = f"{args.container_name}-{user}"
-    print(f"Setting up docker container in the head node...")
-    # start local docker image
-    launch_container_and_copy_code_repo(args, container_name)
+    subprocess.run(f"ssh {user}@{first_node} \"{cmd}\"", shell=True)
+    copy_code_repo(args, container_name)
 
     # Find head IP
-    _cmd = "ifconfig bond0 | grep -oP 'inet\s+\K\d+(\.\d+){3}'"
-    head_ip = (
-        subprocess.check_output(
-            f'docker exec {container_name}  sh -c "{_cmd}"', shell=True
-        )
-        .decode("ascii")
-        .strip()
-    )
-    print(f"Finish. Head IP address: {head_ip}. Starting Ray head...")
+    head_ip = socket.gethostbyname(first_node)
+    print(f"Finish. Head IP address: {head_ip}. Starting Ray head...", flush=True)
 
     # start ray head
     port = int(find_free_port())
@@ -57,10 +51,7 @@ def setup_ray(args):
         f"docker exec {container_name} ray start --head --node-ip-address={head_ip} "
         f"--port={port} --num-cpus={args.cpu} --num-gpus={args.gpu}"
     )
-    subprocess.run(cmd, shell=True)
-    cmd = f"docker exec {container_name} cp -r /_realhf/realhf/_C /realhf/realhf/"
-    subprocess.run(cmd, shell=True)
-    print("Done. Setting up slave nodes...")
+    subprocess.run(f"ssh {user}@{first_node} \"{cmd}\"", shell=True)
 
     def execute_slave_cmd(c):
         cc= f"pdsh -R ssh -w {args.node_prefix}[{args.start_idx+1:02d}-{args.end_idx:02d}] {c}"
@@ -83,8 +74,9 @@ def setup_ray(args):
         (f"docker exec {container_name} cp -r /_realhf/realhf/_C /realhf/realhf/"),
     ]
 
-    for c in slave_cmds:
-        execute_slave_cmd(c)
+    if args.end_idx > args.start_idx:
+        for c in slave_cmds:
+            execute_slave_cmd(c)
 
     print("=" * 100)
     print(
