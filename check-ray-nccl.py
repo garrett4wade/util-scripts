@@ -6,6 +6,15 @@ import time
 import torch
 import torch.distributed as dist
 import socket
+import os
+import pickle
+
+os.environ['RAY_DEDUP_LOGS'] = str(0)
+os.environ['NCCL_IB_DISABLE']=str(0)
+os.environ['NNCCL_NET_GDR_LEVEL']=str(2)
+os.environ['NCCL_IB_QPS_PER_CONNECTION']=str(4)
+os.environ['NCCL_IB_TC']=str(160)
+os.environ['NCCL_MIN_NCHANNELS']=str(24)
 
 
 @ray.remote(num_gpus=1)
@@ -29,30 +38,34 @@ class Worker:
     def compute(self):
         buf = torch.randn(self.nel, dtype=self.dtype, device="cuda")
         for _ in range(5):
-            dist.all_reduce(buf)
+            dist.broadcast(buf, src=0)
         t_total = 0
+        torch.cuda.synchronize()
+        tik = time.perf_counter()
         for _ in range(self.repeat):
-            torch.cuda.synchronize()
-            tik = time.perf_counter()
             # with time_range('gpu_operation', color_id=0) as tr:
-            dist.all_reduce(buf)
-            torch.cuda.synchronize()
-            t_total += time.perf_counter() - tik
+            dist.broadcast(buf, src=0)
+        torch.cuda.synchronize()
+        t_total += time.perf_counter() - tik
         bw = self.repeat * self.n_bytes / 1e9 / (t_total)
         print(f"BW: {bw} GBps")
 
 ray.init()
 warmup = 5
-repeat = 10
-world_size= 40
-n_bytes = 4 * 1024**3
-workers = []
-for i in range(world_size):
-    w = Worker.remote(rank=i, world_size=world_size, warmup=warmup, repeat=repeat, n_bytes=n_bytes)
-    workers.append(w)
-head = ray.get(workers[0].get_addr.remote())
-ray.get([w.setup.remote(head=head) for w in workers])
-ray.get([w.compute.remote() for w in workers])
+repeat = 20
+world_size= 16
+for factor in [1024 * 16]:
+    n_bytes = factor * 1024**2
+    print(f"n_bytes: {factor} MB")
+    workers = []
+    for i in range(world_size):
+        w = Worker.remote(rank=i, world_size=world_size, warmup=warmup, repeat=repeat, n_bytes=n_bytes)
+        workers.append(w)
+    head = ray.get(workers[0].get_addr.remote())
+    ray.get([w.setup.remote(head=head) for w in workers])
+    ray.get([w.compute.remote() for w in workers])
+    for w in workers:
+        ray.kill(w)
 # init_refs.append(w.setup.remote(i, world_size))
 # ray.get(init_refs)
 
