@@ -73,35 +73,38 @@ def main(rank, world_size, head_ip):
         "nccl", init_method=f"tcp://{head_ip}:7777", rank=rank, world_size=world_size
     )
     ranks = list(range(world_size))
-    n_iters = 20
+    n_iters = 100
     g = dist.new_group(ranks=ranks, backend="nccl")
-    data_size_gb = 10
     dtype = torch.half
-    n_elements = data_size_gb * 1024**3 // dtype.itemsize
 
-    for comm_type in [
-        # "scatter",
-        # "allgather",
-        # "allgather_t",
-        "allreduce",
-        "bcast",
-        # "alltoall",
-    ]:
-        if rank in ranks:
-            _comm_impl(n_elements, dtype, rank, ranks, comm_type, g)
+    for data_size_mb in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]:
+        n_elements = data_size_mb * 1024**2 // dtype.itemsize
 
-            total_t = 0
-            for _ in range(n_iters):
-                total_t += _comm_impl(n_elements, dtype, rank, ranks, comm_type, g)
+        for comm_type in [
+            # "scatter",
+            # "allgather",
+            # "allgather_t",
+            # "allreduce",
+            "bcast",
+            # "alltoall",
+        ]:
+            if rank in ranks:
+                for _ in range(5):
+                    _comm_impl(n_elements, dtype, rank, ranks, comm_type, g)
 
-            total_t = torch.tensor(total_t, device="cuda", dtype=torch.float32)
-            dist.all_reduce(total_t, group=g)
-            total_t /= len(ranks) * n_iters
-            if rank == ranks[0]:
-                print(
-                    f"{comm_type} data {data_size_gb} GB in avg {total_t.item() / 1e3:.2f}us, "
-                    f"BW {data_size_gb * 1024**3 / 1e9 / (total_t.item() / 1e9):.2f} GB/s"
-                )
+                total_t = 0
+                for _ in range(n_iters):
+                    total_t += _comm_impl(n_elements, dtype, rank, ranks, comm_type, g)
+
+                total_t = torch.tensor(total_t, device="cuda", dtype=torch.float32)
+                dist.all_reduce(total_t, group=g)
+                total_t /= len(ranks) * n_iters
+                # total_t /= n_iters
+                if rank == ranks[0]:
+                    print(
+                        f"{comm_type} data {data_size_mb} MB in avg {total_t.item() / 1e3:.2f}us, "
+                        f"BW {data_size_mb * 1024**2 / 1e9 / (total_t.item() / 1e9):.2f} GB/s"
+                    )
     dist.barrier()
     dist.destroy_process_group(g)
     dist.destroy_process_group()
